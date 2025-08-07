@@ -1,6 +1,6 @@
 // app/admin/layout.tsx
-import AdminLayout from "../admin-layout/layout";
+import AdminAuthLayout from "../admin-layout/layout";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  return <AdminLayout>{children}</AdminLayout>;
+  return <AdminAuthLayout>{children}</AdminAuthLayout>;
 }
