@@ -36,9 +36,10 @@ export async function GET(request: NextRequest) {
     
     let orders;
     if (limit) {
-      const { data, error } = await adminOperations.getAllOrders();
+      // Corrected: Use adminOperations.getOrders() instead of .getAllOrders()
+      const { data, error } = await adminOperations.getOrders(parseInt(limit));
       if (error) throw error;
-      orders = data?.slice(0, parseInt(limit)) || [];
+      orders = data || [];
     } else {
       const { data, error } = await adminOperations.getOrdersWithCustomers();
       if (error) throw error;
@@ -83,16 +84,45 @@ export async function PATCH(request: NextRequest) {
     }
 
     // Parse request body
-    const { orderId, status } = await request.json();
+    const { orderId, status } = await request.json() as { orderId: string; status: string };
 
     if (!orderId || !status) {
       return NextResponse.json({ error: 'Missing orderId or status' }, { status: 400 });
     }
 
     // Update order using admin client
-    const { data, error } = await adminOperations.updateOrderStatus(orderId, status);
+    const { data, error } = await adminOperations.updateOrderStatus(orderId, status as any);
     
     if (error) throw error;
+
+    // If accepted/confirmed → call Pikago to import
+    const shouldNotifyPikago = status === 'accepted' || status === 'confirmed';
+    if (shouldNotifyPikago) {
+      const pikagoBase = process.env.PIKAGO_BASE_URL || 'http://localhost:3001';
+      const shared = process.env.PIKAGO_SHARED_SECRET;
+
+      if (!shared) {
+        console.warn('PIKAGO_SHARED_SECRET not set – skipping Pikago import');
+      } else {
+        try {
+          const res = await fetch(`${pikagoBase}/api/import-order`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-shared-secret': shared,
+            },
+            body: JSON.stringify({ orderId, source: 'ironxpress' }),
+          });
+
+          if (!res.ok) {
+            const text = await res.text();
+            console.error('Pikago import failed', res.status, text);
+          }
+        } catch (e) {
+          console.error('Error calling Pikago import-order:', e);
+        }
+      }
+    }
 
     return NextResponse.json({ success: true, data });
 

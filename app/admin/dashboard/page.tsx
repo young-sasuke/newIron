@@ -127,7 +127,7 @@ export default function AdminDashboardPage() {
       
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
-      toast.error(`Failed to load dashboard data: ${error.message}`);
+      toast.error(`Failed to load dashboard data: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setLoading(false);
     }

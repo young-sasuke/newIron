@@ -68,7 +68,7 @@ export default function OrdersPage() {
       
     } catch (error) {
       console.error('Error fetching orders:', error);
-      toast.error(`Failed to fetch orders: ${error.message}`);
+      toast.error(`Failed to fetch orders: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setLoading(false);
     }
@@ -520,7 +520,7 @@ export default function OrdersPage() {
                   <div className="bg-gray-50 rounded-lg p-4">
                     <p><strong>Order ID:</strong> {selectedOrder.id}</p>
                     <p><strong>Status:</strong> 
-                      <span className={`ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(selectedOrder.status)}`}>
+                      <span className={`ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(selectedOrder.status || 'pending')}`}>
                         {selectedOrder.status}
                       </span>
                     </p>

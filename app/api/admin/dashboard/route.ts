@@ -1,61 +1,79 @@
 // app/api/admin/dashboard/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { adminOperations } from '@/lib/supabase-admin';
-import { supabase } from '@/lib/supabase';
+import { NextRequest, NextResponse } from "next/server";
+import { supabase } from "@/lib/supabase";            // public client (for verifying the user token)
+import { adminOperations } from "@/lib/supabase-admin"; // service-role helpers
 
-export async function GET(request: NextRequest) {
+/**
+ * Extracts the bearer token and returns the authenticated user.
+ * Also enforces that the user is an admin (by role metadata or allowlist).
+ */
+async function getAdminUser(req: NextRequest) {
+  const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    return { error: "Missing or invalid Authorization header", status: 401 as const };
+  }
+
+  const token = authHeader.replace("Bearer ", "").trim();
+
+  // Verify token with the public client (server-side usage is OK)
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data?.user) {
+    return { error: "Invalid or expired token", status: 401 as const };
+  }
+
+  const user = data.user;
+
+  // Admin check: either metadata role === 'admin' OR email in allowlist
+  const metaRole =
+    (user.user_metadata?.role as string | undefined) ??
+    (user.app_metadata?.role as string | undefined);
+
+  const allowlisted =
+    (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "")
+      .split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean)
+      .includes((user.email || "").toLowerCase());
+
+  if (metaRole !== "admin" && !allowlisted) {
+    return { error: "Admin access required", status: 403 as const };
+  }
+
+  return { user };
+}
+
+export async function GET(req: NextRequest) {
   try {
-    // Get the authorization header
-    const authHeader = request.headers.get('authorization');
-    
-    if (!authHeader) {
-      return NextResponse.json({ error: 'No authorization header' }, { status: 401 });
+    const auth = await getAdminUser(req);
+    if ("error" in auth) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
     }
 
-    // Create a supabase client with the user's token
-    const token = authHeader.replace('Bearer ', '');
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-
-    if (userError || !user) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
-    }
-
-    // Check if user is admin
-    const userMetadata = user.user_metadata || {};
-    const appMetadata = user.app_metadata || {};
-    const isAdmin = userMetadata.role === 'admin' || appMetadata.role === 'admin';
-
-    if (!isAdmin) {
-      return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
-    }
-
-    // Fetch dashboard data using admin client
-    const [statsResult, ordersResult] = await Promise.all([
+    // Use service-role ops for RLS-bypassing reads
+    const [statsRes, ordersRes] = await Promise.all([
       adminOperations.getOrderStats(),
-      adminOperations.getOrdersWithCustomers()
+      adminOperations.getOrdersWithCustomers(), // returns most recent first; we’ll trim to 5
     ]);
 
-    if (statsResult.error) {
-      throw new Error(`Stats error: ${statsResult.error.message}`);
+    if (statsRes.error) {
+      return NextResponse.json({ error: statsRes.error.message }, { status: 500 });
+    }
+    if (ordersRes.error) {
+      return NextResponse.json({ error: ordersRes.error.message }, { status: 500 });
     }
 
-    if (ordersResult.error) {
-      throw new Error(`Orders error: ${ordersResult.error.message}`);
-    }
-
-    const recentOrders = ordersResult.data?.slice(0, 5) || [];
+    const recentOrders = (ordersRes.data || []).slice(0, 5);
 
     return NextResponse.json({
-      stats: statsResult.data,
+      success: true,
+      stats: statsRes.data,
       recentOrders,
-      success: true
     });
-
-  } catch (error) {
-    console.error('Dashboard API Error:', error);
+  } catch (err: any) {
+    console.error("Dashboard API Error:", err);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 }
+      { error: err?.message || "Internal server error" },
+      { status: 500 },
     );
   }
 }
