@@ -8,7 +8,8 @@ export async function GET(
 ) {
   try {
     const sharedSecret = request.headers.get('x-shared-secret')
-    if (!sharedSecret || sharedSecret !== process.env.PIKAGO_SHARED_SECRET) {
+    const secret = process.env.PIKAGO_SHARED_SECRET || process.env.INTERNAL_API_SECRET
+    if (!sharedSecret || !secret || sharedSecret !== secret) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
@@ -29,10 +30,10 @@ export async function GET(
     }
     if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
 
-    // For convenience, Pikago expects a flat JSON, not { order: {...} }
+    // Pikago expects flat JSON (not { order: {...} })
     return NextResponse.json(order)
   } catch (err) {
-    console.error('API Error:', err)
+    console.error('API Error (GET /api/admin/orders/[id]):', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
