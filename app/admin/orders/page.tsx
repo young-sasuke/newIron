@@ -13,7 +13,9 @@ import {
   Search,
   RefreshCw,
   ChevronDown,
-  Calendar
+  Calendar,
+  Package,
+  Truck
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 
@@ -159,13 +161,93 @@ export default function OrdersPage() {
     }
   };
 
+  const handleReceived = async (orderId: string) => {
+    setProcessingId(orderId);
+    try {
+      // Get user session for authorization
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        throw new Error('No active session');
+      }
+
+      // First mark as received
+      await fetch('/api/admin/orders', {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ orderId, status: 'received' })
+      });
+
+      // Then immediately transition to work_in_progress
+      const response = await fetch('/api/admin/orders', {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ orderId, status: 'work_in_progress' })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to update order');
+      }
+
+      toast.success('Order received and marked as work in progress!');
+      fetchOrders();
+    } catch (error) {
+      console.error('Error marking order as received:', error);
+      toast.error('Failed to mark order as received');
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleReadyForDelivery = async (orderId: string) => {
+    setProcessingId(orderId);
+    try {
+      // Get user session for authorization
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        throw new Error('No active session');
+      }
+
+      // Call Pikago ready-to-dispatch endpoint
+      const pikagoResponse = await fetch('/api/admin/orders/ready-for-delivery', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ orderId })
+      });
+
+      if (!pikagoResponse.ok) {
+        const errorData = await pikagoResponse.json();
+        throw new Error(errorData.error || 'Failed to mark order as ready for delivery');
+      }
+
+      toast.success('Order marked as ready for delivery!');
+      fetchOrders();
+    } catch (error) {
+      console.error('Error marking order as ready for delivery:', error);
+      toast.error('Failed to mark order as ready for delivery');
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'pending':
         return 'bg-yellow-100 text-yellow-800 border-yellow-200';
       case 'accepted':
         return 'bg-green-100 text-green-800 border-green-200';
-      case 'rejected':
+      case 'cancelled':
         return 'bg-red-100 text-red-800 border-red-200';
       case 'completed':
         return 'bg-blue-100 text-blue-800 border-blue-200';
@@ -226,7 +308,7 @@ export default function OrdersPage() {
             <option value="all">All Status</option>
             <option value="pending">Pending</option>
             <option value="accepted">Accepted</option>
-            <option value="rejected">Rejected</option>
+            <option value="cancelled">Cancelled</option>
             <option value="completed">Completed</option>
           </select>
           <ChevronDown className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
@@ -348,7 +430,7 @@ export default function OrdersPage() {
                       <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium border ${
                         order.order_status === 'confirmed' || order.order_status === 'accepted' ? 'bg-green-100 text-green-800 border-green-200' :
                         order.order_status === 'pending' ? 'bg-yellow-100 text-yellow-800 border-yellow-200' :
-                        order.order_status === 'cancelled' || order.order_status === 'rejected' ? 'bg-red-100 text-red-800 border-red-200' :
+                        order.order_status === 'cancelled' ? 'bg-red-100 text-red-800 border-red-200' :
                         order.order_status === 'delivered' || order.order_status === 'completed' ? 'bg-blue-100 text-blue-800 border-blue-200' :
                         'bg-gray-100 text-gray-800 border-gray-200'
                       }`}>
@@ -441,7 +523,7 @@ export default function OrdersPage() {
                               Accept
                             </button>
                             <button
-                              onClick={() => updateOrderStatus(order.id, 'rejected')}
+                              onClick={() => updateOrderStatus(order.id, 'cancelled')}
                               disabled={processingId === order.id}
                               className={`flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors ${
                                 processingId === order.id ? 'animate-pulse' : ''
@@ -456,6 +538,44 @@ export default function OrdersPage() {
                               Reject
                             </button>
                           </>
+                        )}
+                        
+                        {/* Show Received button when PG has reached store */}
+                        {(order.order_status === 'reached' || order.order_status === 'delivered_to_store') && (
+                          <button
+                            onClick={() => handleReceived(order.id)}
+                            disabled={processingId === order.id}
+                            className={`flex items-center gap-1 px-3 py-1.5 bg-orange-600 text-white text-sm rounded-lg hover:bg-orange-700 disabled:opacity-50 transition-colors ${
+                              processingId === order.id ? 'animate-pulse' : ''
+                            }`}
+                            title="Receive Order - Mark as received and start work"
+                          >
+                            {processingId === order.id ? (
+                              <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+                            ) : (
+                              <Package size={14} />
+                            )}
+                            Received
+                          </button>
+                        )}
+                        
+                        {/* Show Ready for delivery button when work in progress */}
+                        {(order.order_status === 'work_in_progress' || order.order_status === 'received') && (
+                          <button
+                            onClick={() => handleReadyForDelivery(order.id)}
+                            disabled={processingId === order.id}
+                            className={`flex items-center gap-1 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors ${
+                              processingId === order.id ? 'animate-pulse' : ''
+                            }`}
+                            title="Mark as Ready for Delivery - Send to Pikago dispatch"
+                          >
+                            {processingId === order.id ? (
+                              <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+                            ) : (
+                              <Truck size={14} />
+                            )}
+                            Ready for Delivery
+                          </button>
                         )}
                         
                         {/* Show complete button for accepted orders */}
@@ -478,15 +598,14 @@ export default function OrdersPage() {
                         )}
                         
                         {/* Show status for completed/cancelled orders */}
-                        {(order.order_status === 'delivered' || order.order_status === 'cancelled' || order.order_status === 'rejected') && (
+                        {(order.order_status === 'delivered' || order.order_status === 'cancelled') && (
                           <div className={`px-3 py-1 rounded-lg text-sm font-medium ${
                             order.order_status === 'delivered' ? 'bg-green-100 text-green-800' :
-                            order.order_status === 'cancelled' || order.order_status === 'rejected' ? 'bg-red-100 text-red-800' :
+                            order.order_status === 'cancelled' ? 'bg-red-100 text-red-800' :
                             'bg-gray-100 text-gray-800'
                           }`}>
                             {order.order_status === 'delivered' ? '✅ Completed' :
-                             order.order_status === 'cancelled' ? '❌ Cancelled' :
-                             order.order_status === 'rejected' ? '❌ Rejected' : 'Done'}
+                             order.order_status === 'cancelled' ? '❌ Cancelled' : 'Done'}
                           </div>
                         )}
                       </div>

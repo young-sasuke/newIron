@@ -2,18 +2,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase as supabaseUser } from '@/lib/supabase'
 import { supabaseAdmin } from '@/lib/supabase-admin'
-import { adminOperations } from '@/lib/supabase-admin' // kept for admin flows
+import { adminOperations } from '@/lib/supabase-admin'
+import {
+  getPikagoClient,
+  PIKAGO_STORE_ADDRESS_TABLE,
+  PG_RELATION_MISSING,
+} from '@/lib/supabase-pikago-admin'
+import { notifyOrderStatusChange } from '@/lib/notification-hooks'
 
 /* ---------------- auth helpers ---------------- */
 
-/** Internal via shared secret header (used by GET path too) */
 function isInternalSharedSecret(req: NextRequest): boolean {
   const xs = req.headers.get('x-shared-secret')?.trim()
   const secret = process.env.PIKAGO_SHARED_SECRET || process.env.INTERNAL_API_SECRET
   return !!xs && !!secret && xs === secret
 }
 
-/** Internal via Authorization: Bearer <INTERNAL_API_SECRET> (for PATCH from Pikago) */
 function isInternalBearer(req: NextRequest): boolean {
   const auth = req.headers.get('authorization') || ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
@@ -21,7 +25,6 @@ function isInternalBearer(req: NextRequest): boolean {
   return !!token && !!expected && token === expected
 }
 
-/** Admin panel JWT auth (unchanged) */
 async function requireAdminUser(
   req: NextRequest
 ): Promise<{ ok: true; userId: string } | { ok: false; res: Response }> {
@@ -46,7 +49,39 @@ async function requireAdminUser(
   return { ok: true, userId: user.id }
 }
 
-/* ---------------- GET (unchanged for panel; supports internal shared secret) ---------------- */
+/* --------- helpers: read DEFAULT store address from Pikago DB ---------- */
+
+async function fetchDefaultStoreAddressFromPikago() {
+  try {
+    const client = getPikagoClient()
+    const candidates = [PIKAGO_STORE_ADDRESS_TABLE, 'store_address']
+
+    // Prefer explicitly-marked default
+    for (const t of candidates) {
+      const { data, error } = await client.from(t).select('*').eq('is_default', true).limit(1)
+      if (!error && Array.isArray(data) && data.length) return { table: t, row: data[0] }
+      if (error && error.code !== PG_RELATION_MISSING) {
+        console.warn('[orders] fetch default (explicit) error', error)
+        return null
+      }
+    }
+
+    // Fallback: first created
+    for (const t of candidates) {
+      const { data, error } = await client.from(t).select('*').order('created_at', { ascending: true }).limit(1)
+      if (!error && Array.isArray(data) && data.length) return { table: t, row: data[0] }
+      if (error && error.code !== PG_RELATION_MISSING) {
+        console.warn('[orders] fetch default (first) error', error)
+        return null
+      }
+    }
+  } catch (e) {
+    console.warn('[orders] fetchDefaultStoreAddressFromPikago fatal:', e)
+  }
+  return null
+}
+
+/* ---------------- GET (unchanged) ---------------- */
 
 export async function GET(request: NextRequest) {
   try {
@@ -55,7 +90,6 @@ export async function GET(request: NextRequest) {
     const limitParam = searchParams.get('limit')
     const limit = limitParam ? Math.max(1, parseInt(limitParam)) : null
 
-    // A) Internal (Pikago / Postman with shared secret)
     if (isInternalSharedSecret(request)) {
       let q = supabaseAdmin.from('orders').select('*').order('created_at', { ascending: false })
       if (status) q = q.eq('order_status', status)
@@ -65,7 +99,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ orders: data ?? [], count: (data ?? []).length })
     }
 
-    // B) Admin panel (Bearer admin JWT)
     const adminCheck = await requireAdminUser(request)
     if (!adminCheck.ok) return adminCheck.res
 
@@ -93,42 +126,19 @@ export async function GET(request: NextRequest) {
   }
 }
 
-/* ---------------- PATCH (extended: supports internal Bearer + existing admin flow) ---------------- */
+/* ---------------- PATCH ---------------- */
 
 export async function PATCH(request: NextRequest) {
   try {
-    // Path A: Internal service-to-service (used by Pikago)
+    // A) internal bearer path (unchanged)
     if (isInternalBearer(request)) {
       const body = await request.json().catch(() => ({}))
-      console.log('[IronXpress PATCH] Received internal request:', JSON.stringify(body, null, 2))
+      const id: string = String(body?.id ?? body?.orderId ?? body?.order_id ?? '').trim()
+      if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
 
-      // accept multiple input shapes
-      const id: string =
-        String(body?.id ?? body?.orderId ?? body?.order_id ?? '').trim()
-      if (!id) {
-        console.error('[IronXpress PATCH] Missing order ID')
-        return NextResponse.json({ error: 'id is required' }, { status: 400 })
-      }
-
-      // allow both `order_status` and legacy `status`
       const incomingStatus = (body?.order_status ?? body?.status) as string | undefined
-      const assignedUserId = body?.assigned_user_id as string | undefined
-
-      console.log(`[IronXpress PATCH] Processing order ${id}:`)
-      console.log(`[IronXpress PATCH] - Status: ${incomingStatus}`)
-      console.log(`[IronXpress PATCH] - Assigned User: ${assignedUserId} (will be ignored - column doesn't exist)`)
-
-      // build a safe patch (exclude assigned_user_id since column doesn't exist in IronXpress)
       const patch: Record<string, any> = { updated_at: new Date().toISOString() }
       if (incomingStatus) patch.order_status = String(incomingStatus)
-      // Note: assigned_user_id column doesn't exist in IronXpress orders table, so we ignore it
-
-      if (Object.keys(patch).length === 1) {
-        console.error('[IronXpress PATCH] No updatable fields found')
-        return NextResponse.json({ error: 'no updatable fields' }, { status: 400 })
-      }
-
-      console.log('[IronXpress PATCH] Applying patch:', JSON.stringify(patch, null, 2))
 
       const { data, error } = await supabaseAdmin
         .from('orders')
@@ -137,23 +147,12 @@ export async function PATCH(request: NextRequest) {
         .select('id, order_status, user_id')
         .maybeSingle()
 
-      if (error) {
-        console.error('[IronXpress PATCH] Database error:', error)
-        return NextResponse.json({ error: error.message }, { status: 500 })
-      }
-      if (!data) {
-        console.error(`[IronXpress PATCH] Order ${id} not found in database`)
-        return NextResponse.json({ error: `Order ${id} not found` }, { status: 404 })
-      }
-
-      console.log('[IronXpress PATCH] ✅ Order updated successfully:', data)
-      console.log('[IronXpress PATCH] 🔔 Database triggers should now fire for notifications')
-
-      // Triggers on IronXpress will fire (e.g., send_order_status_notification)
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (!data) return NextResponse.json({ error: `Order ${id} not found` }, { status: 404 })
       return NextResponse.json({ ok: true, updated: data })
     }
 
-    // Path B: Admin panel action (existing behavior, unchanged)
+    // B) Admin panel action
     const adminCheck = await requireAdminUser(request)
     if (!adminCheck.ok) return adminCheck.res
 
@@ -165,28 +164,58 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Missing orderId or status' }, { status: 400 })
     }
 
-    // Update using your admin operations (kept as-is)
+    // Get current status for notification comparison
+    const { data: currentOrder } = await supabaseAdmin
+      .from('orders')
+      .select('order_status')
+      .eq('id', orderId)
+      .single()
+    const previousStatus = currentOrder?.order_status
+
+    // Update status in IX
     const { data, error } = await adminOperations.updateOrderStatus(orderId, status as any)
     if (error) throw error
 
-    // If accepted/confirmed → ping Pikago to import (kept)
+    // Trigger notification hooks asynchronously (don't wait/block the response)
+    if (previousStatus !== status) {
+      notifyOrderStatusChange(orderId, status, previousStatus)
+        .then(success => {
+          if (success) {
+            console.log(`[API] ✅ Notification sent for order ${orderId}: ${previousStatus} → ${status}`);
+          } else {
+            console.warn(`[API] ⚠️ Notification failed for order ${orderId}: ${previousStatus} → ${status}`);
+          }
+        })
+        .catch(error => {
+          console.error(`[API] ❌ Notification error for order ${orderId}:`, error);
+        });
+    }
+
+    // If accepted/confirmed -> notify Pikago with pickup address
     const shouldNotifyPikago = status.toLowerCase() === 'accepted' || status.toLowerCase() === 'confirmed'
-    console.log(`[IronXpress] Should notify Pikago: ${shouldNotifyPikago} (status: ${status})`)
-    
     if (shouldNotifyPikago) {
       const pikagoBase = process.env.PIKAGO_BASE_URL || 'http://localhost:3001'
       const shared = process.env.PIKAGO_SHARED_SECRET
-      
-      console.log(`[IronXpress] Pikago URL: ${pikagoBase}`)
-      console.log(`[IronXpress] Shared secret: ${shared ? 'SET' : 'MISSING'}`)
-      
+
       if (!shared) {
         console.warn('[IronXpress] PIKAGO_SHARED_SECRET not set – skipping Pikago import')
       } else {
         try {
-          const payload = { orderId, source: 'ironxpress' }
-          console.log('[IronXpress] Sending to Pikago:', JSON.stringify(payload, null, 2))
-          
+          const addr = await fetchDefaultStoreAddressFromPikago()
+          // Shape BOTH id + full object so PG can consume either
+          const payload: any = { orderId, source: 'ironxpress' }
+          if (addr?.row) {
+            payload.store_address_id = addr.row.id
+            payload.store_address = {
+              id: addr.row.id,
+              name: addr.row.name,
+              address: addr.row.address,        // { line1, line2, city, state, pincode, phone, ... }
+              is_default: !!(addr.row.is_default ?? addr.row.address?.is_default),
+            }
+          }
+
+          console.log('[IronXpress] Sending to Pikago /api/import-order:', JSON.stringify(payload, null, 2))
+
           const res = await fetch(`${pikagoBase}/api/import-order`, {
             method: 'POST',
             headers: {
@@ -195,11 +224,9 @@ export async function PATCH(request: NextRequest) {
             },
             body: JSON.stringify(payload),
           })
-          
+
           const responseText = await res.text()
-          console.log(`[IronXpress] Pikago response: ${res.status}`)
-          console.log(`[IronXpress] Pikago response body: ${responseText}`)
-          
+          console.log(`[IronXpress] Pikago response: ${res.status}`)  
           if (!res.ok) {
             console.error('[IronXpress] Pikago import failed', res.status, responseText)
           } else {
