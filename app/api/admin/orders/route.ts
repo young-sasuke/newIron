@@ -130,15 +130,21 @@ export async function GET(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    // A) internal bearer path (unchanged)
-    if (isInternalBearer(request)) {
+    // A) internal service-to-service auth (Bearer or x-shared-secret)
+    if (isInternalBearer(request) || isInternalSharedSecret(request)) {
+      const authType = isInternalBearer(request) ? 'Bearer' : 'x-shared-secret'
+      console.log(`[IX Admin Orders] 🔐 Service auth via ${authType}`)
+      
       const body = await request.json().catch(() => ({}))
       const id: string = String(body?.id ?? body?.orderId ?? body?.order_id ?? '').trim()
       if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
 
       const incomingStatus = (body?.order_status ?? body?.status) as string | undefined
       const patch: Record<string, any> = { updated_at: new Date().toISOString() }
-      if (incomingStatus) patch.order_status = String(incomingStatus)
+      if (incomingStatus) {
+        patch.order_status = String(incomingStatus)
+        console.log(`[IX Admin Orders] 🔄 Updating order ${id}: ${patch.order_status}`)
+      }
 
       const { data, error } = await supabaseAdmin
         .from('orders')
@@ -149,6 +155,8 @@ export async function PATCH(request: NextRequest) {
 
       if (error) return NextResponse.json({ error: error.message }, { status: 500 })
       if (!data) return NextResponse.json({ error: `Order ${id} not found` }, { status: 404 })
+      
+      console.log(`[IX Admin Orders] ✅ Updated order ${id} to ${data.order_status}`)
       return NextResponse.json({ ok: true, updated: data })
     }
 
@@ -202,16 +210,27 @@ export async function PATCH(request: NextRequest) {
       } else {
         try {
           const addr = await fetchDefaultStoreAddressFromPikago()
-          // Shape BOTH id + full object so PG can consume either
+          // Shape BOTH id + full object so PG can consume either (with lat/lng)
           const payload: any = { orderId, source: 'ironxpress' }
           if (addr?.row) {
+            const addressObj = addr.row.address || {}
             payload.store_address_id = addr.row.id
             payload.store_address = {
               id: addr.row.id,
               name: addr.row.name,
-              address: addr.row.address,        // { line1, line2, city, state, pincode, phone, ... }
+              address: {
+                ...addressObj,
+                // Ensure lat/lng are included if available
+                latitude: addressObj.latitude || addressObj.lat || null,
+                longitude: addressObj.longitude || addressObj.lng || null,
+              },
               is_default: !!(addr.row.is_default ?? addr.row.address?.is_default),
             }
+            console.log(`[IX Orders] 🗺️ Including store address with lat/lng:`, {
+              id: payload.store_address.id,
+              name: payload.store_address.name,
+              hasLatLng: !!(payload.store_address.address?.latitude && payload.store_address.address?.longitude)
+            })
           }
 
           console.log('[IronXpress] Sending to Pikago /api/import-order:', JSON.stringify(payload, null, 2))
