@@ -43,10 +43,24 @@ export async function checkCurrentUserIsAdmin(): Promise<boolean> {
 }
 
 // Order status types (matching your database)
-export type OrderStatus = 'pending' | 'confirmed' | 'picked_up' | 'in_transit' | 'delivered' | 'cancelled';
+// Include all order status strings used across the admin UI and backend
+export type OrderStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'accepted'
+  | 'received'
+  | 'work_in_progress'
+  | 'picked_up'
+  | 'in_transit'
+  | 'delivered'
+  | 'delivered_to_store'
+  | 'reached'
+  | 'cancelled'
+  | 'completed';
 
 // Order interface (matching your existing database structure)
 export interface Order {
+  items: any;
   id: string;
   user_id: string;
   total_amount: number;
@@ -75,6 +89,7 @@ export interface Order {
   full_name?: string;
   email?: string;
   phone?: string;
+  notes?: string;
 }
 
 // Cart item interface (for order items)
