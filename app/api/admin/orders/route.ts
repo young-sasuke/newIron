@@ -1,4 +1,4 @@
-// app/api/admin/orders/route.ts  (IronXpress)
+// app/api/admin/orders/route.ts (IronXpress)
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase as supabaseUser } from '@/lib/supabase'
 import { supabaseAdmin } from '@/lib/supabase-admin'
@@ -81,7 +81,7 @@ async function fetchDefaultStoreAddressFromPikago() {
   return null
 }
 
-/* ---------------- GET (unchanged) ---------------- */
+/* ---------------- GET ---------------- */
 
 export async function GET(request: NextRequest) {
   try {
@@ -102,21 +102,54 @@ export async function GET(request: NextRequest) {
     const adminCheck = await requireAdminUser(request)
     if (!adminCheck.ok) return adminCheck.res
 
+    // Fetch orders
+    let ordersData;
     if (limit) {
       const { data, error } = await adminOperations.getOrders(limit)
       if (error) throw error
-      const filtered = status
-        ? (data ?? []).filter((o: any) => (o.order_status || '').toLowerCase() === status)
-        : (data ?? [])
-      return NextResponse.json({ orders: filtered, count: filtered.length })
+      ordersData = data ?? []
     } else {
       const { data, error } = await adminOperations.getOrdersWithCustomers()
       if (error) throw error
-      const filtered = status
-        ? (data ?? []).filter((o: any) => (o.order_status || '').toLowerCase() === status)
-        : (data ?? [])
-      return NextResponse.json({ orders: filtered, count: filtered.length })
+      ordersData = data ?? []
     }
+
+    // Fetch customer profiles based on user_ids
+    const userIds = Array.from(
+      new Set(ordersData.map((o: any) => o.user_id).filter(Boolean))
+    )
+
+    let profileMap: Record<string, any> = {}
+    if (userIds.length) {
+      const { data: profiles, error: pErr } = await supabaseAdmin
+        .from('user_profiles')
+        .select('user_id, first_name, last_name, email, phone_number')
+        .in('user_id', userIds)
+
+      if (pErr) {
+        console.warn('Error fetching profiles:', pErr)
+      } else {
+        profileMap = Object.fromEntries(profiles.map(p => [p.user_id, p]))
+      }
+    }
+
+    // Merge profile data with orders
+    const shapedOrders = ordersData.map((o: any) => {
+      const profile = profileMap[o.user_id] || {}
+      return {
+        ...o,
+        full_name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Unknown Customer',
+        email: profile.email || null,
+        phone: profile.phone_number || null,
+      }
+    })
+
+    // Filter by status if provided
+    const filteredOrders = status
+      ? shapedOrders.filter((o: any) => (o.order_status || '').toLowerCase() === status)
+      : shapedOrders
+
+    return NextResponse.json({ orders: filteredOrders, count: filteredOrders.length })
   } catch (error) {
     console.error('API Error (GET /api/admin/orders):', error)
     return NextResponse.json(
@@ -265,4 +298,4 @@ export async function PATCH(request: NextRequest) {
       { status: 500 }
     )
   }
-}
+}  

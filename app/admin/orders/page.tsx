@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase, subscribeToOrderStatusUpdates } from '@/lib/supabase';
 import { Order, OrderStatus } from '@/lib/admin';
 import { 
   Check, 
@@ -30,7 +30,13 @@ export default function OrdersPage() {
 
   useEffect(() => {
     fetchOrders();
-    setupRealtimeSubscription();
+    const unsubscribeGeneral = setupRealtimeSubscription();
+    const unsubscribeStatus = setupStatusUpdateSubscription();
+    
+    return () => {
+      unsubscribeGeneral();
+      unsubscribeStatus();
+    };
   }, []);
 
   useEffect(() => {
@@ -124,6 +130,34 @@ export default function OrdersPage() {
     return () => {
       subscription.unsubscribe();
     };
+  };
+
+  const setupStatusUpdateSubscription = () => {
+    return subscribeToOrderStatusUpdates(
+      (payload) => {
+        console.log('Order status updated:', payload);
+        
+        // Handle specific status updates
+        if (payload.new?.order_status === 'shipped') {
+          toast.success(
+            `🚛 Order #${payload.new.id?.substring(0, 8)} is out for delivery!`,
+            { position: 'top-right', autoClose: 5000 }
+          );
+        } else if (payload.new?.order_status === 'delivered') {
+          toast.success(
+            `✅ Order #${payload.new.id?.substring(0, 8)} has been delivered!`,
+            { position: 'top-right', autoClose: 5000 }
+          );
+        }
+        
+        // Refresh orders to show updated status
+        fetchOrders();
+      },
+      (error) => {
+        console.error('Status subscription error:', error);
+        toast.error('Real-time updates connection lost. Please refresh.');
+      }
+    );
   };
 
   const updateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
