@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 // Import service-role client dynamically inside handler
 import { supabase as supabaseUser } from '@/lib/supabase'
+import { RiContactsBookLine } from 'react-icons/ri'
 
 /**
  * Accept BOTH:
@@ -37,6 +38,7 @@ export async function GET(
   ctx: { params: Promise<{ id: string }> } // Next.js App Router (await params)
 ) {
   try {
+    console.log('API GET /api/admin/orders/[id] called')
     const { id } = await ctx.params
     if (!id) {
       return NextResponse.json({ error: 'Order ID is required' }, { status: 400 })

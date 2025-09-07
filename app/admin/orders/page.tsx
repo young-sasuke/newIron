@@ -53,14 +53,13 @@ export default function OrdersPage() {
       }
 
       // Call our API route that bypasses RLS
-      const response = await fetch('/api/admin/orders', {
-        method: 'GET',
-        headers: {
+      const response = await fetch('/api/admin/orders/', {
+        headers: {  
           'Authorization': `Bearer ${session.access_token}`,
           'Content-Type': 'application/json',
         },
       });
-
+      console.log(response);
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to fetch orders');
