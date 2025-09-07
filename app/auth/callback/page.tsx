@@ -11,6 +11,23 @@ export default function AuthCallback() {
     handleAuthCallback();
   }, []);
 
+  function setAccessTokenCookie(token: string) {
+    try {
+      const maxAge = 60 * 60; // 1 hour
+      let attrs = 'Path=/; SameSite=Lax; Max-Age=' + String(maxAge);
+      if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+        attrs += '; Secure';
+      }
+      document.cookie = `sb-access-token=${token}; ${attrs}`;
+    } catch {}
+  }
+
+  function clearAccessTokenCookie() {
+    try {
+      document.cookie = 'sb-access-token=; Path=/; Max-Age=0; SameSite=Lax';
+    } catch {}
+  }
+
   async function handleAuthCallback() {
     try {
       // Get the current session after OAuth callback
@@ -31,10 +48,20 @@ export default function AuthCallback() {
       const isAdmin = await checkCurrentUserIsAdmin();
       
       if (isAdmin) {
-        // User is admin, redirect to dashboard
-        router.push('/admin/dashboard');
+        // Set cookie for server-side middleware to read
+        if (session.access_token) setAccessTokenCookie(session.access_token);
+
+        // Respect next param if present and valid, else default
+        const url = new URL(window.location.href);
+        const next = url.searchParams.get('next') || '';
+        if (next && next.startsWith('/admin')) {
+          router.push(next);
+        } else {
+          router.push('/admin/orders');
+        }
       } else {
-        // User is not admin, sign them out and redirect back to login
+        // User is not admin, clear any cookie, sign out and redirect back to login
+        clearAccessTokenCookie();
         await supabase.auth.signOut();
         router.push('/login?error=not_admin');
       }

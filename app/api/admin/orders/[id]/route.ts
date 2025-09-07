@@ -1,6 +1,6 @@
 // app/api/admin/orders/[id]/route.ts  (IronXpress)
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseAdmin } from '@/lib/supabase-admin'
+// Import service-role client dynamically inside handler
 import { supabase as supabaseUser } from '@/lib/supabase'
 
 /**
@@ -50,6 +50,7 @@ export async function GET(
     }
 
     // Fetch the order
+    const { supabaseAdmin } = await import('@/lib/supabase-admin')
     const { data: order, error: orderErr } = await supabaseAdmin
       .from('orders')
       .select('*')

@@ -43,15 +43,16 @@ function LoginContent() {
   async function checkExistingAuth() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      
-      if (session) {
-        // Check if user is admin
+      const next = searchParams.get('next') || '';
+
+      // Only redirect automatically if a valid next param is present.
+      if (session && next.startsWith('/admin')) {
         const isAdmin = await checkCurrentUserIsAdmin();
         if (isAdmin) {
-          router.replace('/admin/dashboard');
+          router.replace(next);
           return;
         } else {
-          // User is logged in but not admin, sign them out
+          // Logged in but not admin – sign out so user can try a different account.
           await supabase.auth.signOut();
           setError('Access denied. You need admin privileges to access this dashboard.');
         }
@@ -68,11 +69,15 @@ function LoginContent() {
     setError("");
     
     try {
+      const next = searchParams.get('next');
+      const base = `${window.location.origin}/auth/callback`;
+      const redirectTo = next && next.startsWith('/admin')
+        ? `${base}?next=${encodeURIComponent(next)}`
+        : base;
+
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: {
-          redirectTo: `${window.location.origin}/auth/callback`
-        }
+        options: { redirectTo }
       });
       
       if (error) {

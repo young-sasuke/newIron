@@ -12,6 +12,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const router = useRouter();
 
   const handleLogout = async () => {
+    // Clear our access-token cookie used by middleware
+    try { document.cookie = 'sb-access-token=; Path=/; Max-Age=0; SameSite=Lax'; } catch {}
     await supabase.auth.signOut();
     router.push('/login');
   };

@@ -1,7 +1,7 @@
 // app/api/admin/dashboard/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";            // public client (for verifying the user token)
-import { adminOperations } from "@/lib/supabase-admin"; // service-role helpers
+// Import service-role helpers dynamically inside handler
 
 /**
  * Extracts the bearer token and returns the authenticated user.
@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Use service-role ops for RLS-bypassing reads
+    const { adminOperations } = await import("@/lib/supabase-admin");
     const [statsRes, ordersRes] = await Promise.all([
       adminOperations.getOrderStats(),
       adminOperations.getOrdersWithCustomers(), // returns most recent first; we’ll trim to 5

@@ -1,44 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AdminLayout from "@/components/AdminLayout";
-import { checkCurrentUserIsAdmin } from "@/lib/admin";
 
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 
 export default function AdminAuthLayout({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
   const [checking, setChecking] = useState(true);
-  const [user, setUser] = useState<any>(null);
 
+  // Client-side: only show a brief loading state while checking.
+  // Do not navigate from here; server-side middleware enforces access.
   useEffect(() => {
-    async function checkAuth() {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session) {
-        router.replace("/login");
-        return;
-      }
-
-      // Check if user has admin role
-      const isAdmin = await checkCurrentUserIsAdmin();
-      
-      if (!isAdmin) {
-        await supabase.auth.signOut();
-        router.replace("/login?error=not_admin");
-        return;
-      }
-
-      setUser(session.user);
-      setChecking(false);
-    }
-    checkAuth();
-  }, [router]);
+    let active = true;
+    supabase.auth.getSession().finally(() => {
+      if (active) setChecking(false);
+    });
+    return () => { active = false };
+  }, []);
 
   if (checking) {
     return (
