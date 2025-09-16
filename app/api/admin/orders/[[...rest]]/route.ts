@@ -1,5 +1,4 @@
 // app/api/admin/orders/[[...rest]]/route.ts
-// Catch-all so /api/admin/orders AND /api/admin/orders/ map here (no redirects)
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
@@ -11,6 +10,16 @@ import {
   PG_RELATION_MISSING,
 } from '@/lib/supabase-pikago-admin'
 import { notifyOrderStatusChange } from '@/lib/notification-hooks'
+
+/** HEAD avoids odd auto-redirects; note params is a Promise in Next 15 */
+export async function HEAD(
+  _req: NextRequest,
+  { params }: { params: Promise<{ rest?: string[] }> }
+) {
+  const { rest } = await params
+  if (rest?.length) return new Response(null, { status: 404 })
+  return new Response(null, { status: 204 })
+}
 
 /* ---------------- auth helpers ---------------- */
 
@@ -62,23 +71,17 @@ async function fetchDefaultStoreAddressFromPikago() {
     for (const t of candidates) {
       const { data, error } = await client.from(t).select('*').eq('is_default', true).limit(1)
       if (!error && Array.isArray(data) && data.length) return { table: t, row: data[0] }
-      if (error && error.code !== PG_RELATION_MISSING) {
-        console.warn('[orders] fetch default (explicit) error', error)
-        return null
-      }
+      if (error && error.code !== PG_RELATION_MISSING) return null
     }
 
     // Fallback: first created
     for (const t of candidates) {
       const { data, error } = await client.from(t).select('*').order('created_at', { ascending: true }).limit(1)
       if (!error && Array.isArray(data) && data.length) return { table: t, row: data[0] }
-      if (error && error.code !== PG_RELATION_MISSING) {
-        console.warn('[orders] fetch default (first) error', error)
-        return null
-      }
+      if (error && error.code !== PG_RELATION_MISSING) return null
     }
-  } catch (e) {
-    console.warn('[orders] fetchDefaultStoreAddressFromPikago fatal:', e)
+  } catch {
+    // noop
   }
   return null
 }
@@ -87,11 +90,12 @@ async function fetchDefaultStoreAddressFromPikago() {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { rest?: string[] } }
+  { params }: { params: Promise<{ rest?: string[] }> }
 ) {
   try {
+    const { rest } = await params
     // Guard: only allow /api/admin/orders and /api/admin/orders/
-    if (params?.rest && params.rest.length > 0) {
+    if (rest?.length) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
     }
 
@@ -140,7 +144,6 @@ export async function GET(
         .select('user_id, first_name, last_name, email, phone_number')
         .in('user_id', userIds)
       if (!pErr && profiles) profileMap = Object.fromEntries(profiles.map((p: any) => [p.user_id, p]))
-      else if (pErr) console.warn('Error fetching profiles:', pErr)
     }
 
     const shapedOrders = ordersData.map((o: any) => {
@@ -162,7 +165,6 @@ export async function GET(
       { headers: { 'X-API': 'orders-ok' } }
     )
   } catch (error) {
-    console.error('API Error (GET /api/admin/orders):', error)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Internal server error' },
       { status: 500, headers: { 'X-API': 'orders-error' } }
@@ -174,19 +176,16 @@ export async function GET(
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { rest?: string[] } }
+  { params }: { params: Promise<{ rest?: string[] }> }
 ) {
   try {
-    // Guard: only allow /api/admin/orders and /api/admin/orders/
-    if (params?.rest && params.rest.length > 0) {
+    const { rest } = await params
+    if (rest?.length) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
     }
 
     // A) Internal service-to-service auth (Bearer or x-shared-secret)
     if (isInternalBearer(request) || isInternalSharedSecret(request)) {
-      const authType = isInternalBearer(request) ? 'Bearer' : 'x-shared-secret'
-      console.log(`[IX Admin Orders] 🔐 Service auth via ${authType}`)
-
       const { supabaseAdmin } = await import('@/lib/supabase-admin')
 
       const body = await request.json().catch(() => ({}))
@@ -195,10 +194,7 @@ export async function PATCH(
 
       const incomingStatus = (body?.order_status ?? body?.status) as string | undefined
       const patch: Record<string, any> = { updated_at: new Date().toISOString() }
-      if (incomingStatus) {
-        patch.order_status = String(incomingStatus)
-        console.log(`[IX Admin Orders] 🔄 Updating order ${id}: ${patch.order_status}`)
-      }
+      if (incomingStatus) patch.order_status = String(incomingStatus)
 
       const { data, error } = await supabaseAdmin
         .from('orders')
@@ -210,7 +206,6 @@ export async function PATCH(
       if (error) return NextResponse.json({ error: error.message }, { status: 500 })
       if (!data) return NextResponse.json({ error: `Order ${id} not found` }, { status: 404 })
 
-      console.log(`[IX Admin Orders] ✅ Updated order ${id} to ${data.order_status}`)
       return NextResponse.json({ ok: true, updated: data })
     }
 
@@ -227,6 +222,7 @@ export async function PATCH(
 
     const { supabaseAdmin, adminOperations } = await import('@/lib/supabase-admin')
 
+    // Get current status for notification comparison
     const { data: currentOrder } = await supabaseAdmin
       .from('orders')
       .select('order_status')
@@ -234,26 +230,21 @@ export async function PATCH(
       .single()
     const previousStatus = currentOrder?.order_status
 
+    // Update status in IX
     const { data, error } = await adminOperations.updateOrderStatus(orderId, status as any)
     if (error) throw error
 
+    // Trigger notification hooks asynchronously
     if (previousStatus !== status) {
-      notifyOrderStatusChange(orderId, status, previousStatus)
-        .then(success => {
-          if (success) console.log(`[API] ✅ Notification sent for order ${orderId}: ${previousStatus} → ${status}`)
-          else console.warn(`[API] ⚠️ Notification failed for order ${orderId}: ${previousStatus} → ${status}`)
-        })
-        .catch(err => console.error(`[API] ❌ Notification error for order ${orderId}:`, err))
+      notifyOrderStatusChange(orderId, status, previousStatus).catch(() => {})
     }
 
+    // If accepted/confirmed -> notify Pikago with pickup address
     const shouldNotifyPikago = status.toLowerCase() === 'accepted' || status.toLowerCase() === 'confirmed'
     if (shouldNotifyPikago) {
       const pikagoBase = process.env.PIKAGO_BASE_URL || 'http://localhost:3001'
       const shared = process.env.PIKAGO_SHARED_SECRET
-
-      if (!shared) {
-        console.warn('[IronXpress] PIKAGO_SHARED_SECRET not set – skipping Pikago import')
-      } else {
+      if (shared) {
         try {
           const addr = await fetchDefaultStoreAddressFromPikago()
           const payload: any = { orderId, source: 'ironxpress' }
@@ -270,40 +261,20 @@ export async function PATCH(
               },
               is_default: !!(addr.row.is_default ?? addr.row.address?.is_default),
             }
-            console.log(`[IX Orders] 🗺️ Including store address with lat/lng:`, {
-              id: payload.store_address.id,
-              name: payload.store_address.name,
-              hasLatLng: !!(payload.store_address.address?.latitude && payload.store_address.address?.longitude)
-            })
           }
-
-          console.log('[IronXpress] Sending to Pikago /api/import-order:', JSON.stringify(payload, null, 2))
-
-          const res = await fetch(`${pikagoBase}/api/import-order`, {
+          await fetch(`${pikagoBase}/api/import-order`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-shared-secret': shared,
-            },
+            headers: { 'Content-Type': 'application/json', 'x-shared-secret': shared },
             body: JSON.stringify(payload),
           })
-
-          const responseText = await res.text()
-          console.log(`[IronXpress] Pikago response: ${res.status}`)
-          if (!res.ok) {
-            console.error('[IronXpress] Pikago import failed', res.status, responseText)
-          } else {
-            console.log('[IronXpress] ✅ Pikago import successful!')
-          }
-        } catch (e) {
-          console.error('[IronXpress] Error calling Pikago import-order:', e)
+        } catch {
+          // noop
         }
       }
     }
 
     return NextResponse.json({ success: true, data })
   } catch (error) {
-    console.error('API Error (PATCH /api/admin/orders):', error)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Internal server error' },
       { status: 500 }
