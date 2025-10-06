@@ -77,8 +77,21 @@ export async function GET(
       items = orderItems
     }
 
+    // Lightweight, printable customer address (non-breaking)
+    const deliveryJson = typeof order.delivery_address === 'string' ? null : order.delivery_address
+    const customer_text =
+      (typeof order.delivery_address === 'string' && order.delivery_address) ||
+      deliveryJson?.address_line_1 ||
+      deliveryJson?.address ||
+      order.address ||
+      null
+
     // IMPORTANT: embed items INSIDE the order (so Pikago sees order.order_items)
-    const orderWithItems = { ...order, order_items: items }
+    const orderWithItems = {
+      ...order,
+      order_items: items,
+      addresses: { customer_text } // ← NEW, optional
+    }
 
     // Keep the old shape compatible: { order: {...} }
     return NextResponse.json({ order: orderWithItems })

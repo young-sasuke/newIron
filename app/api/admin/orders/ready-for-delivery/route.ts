@@ -28,7 +28,6 @@ export async function POST(request: NextRequest) {
     if (!adminCheck.ok) return adminCheck.res
 
     const { orderId } = await request.json();
-
     if (!orderId) {
       return NextResponse.json({ error: 'Order ID is required' }, { status: 400 });
     }
@@ -43,7 +42,6 @@ export async function POST(request: NextRequest) {
         error: 'Server configuration error: Pikago API URL not configured' 
       }, { status: 500 });
     }
-
     if (!sharedSecret) {
       console.error('[Ready for Delivery] ❌ INTERNAL_API_SHARED_SECRET environment variable is required');
       return NextResponse.json({ 
@@ -67,14 +65,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
 
-    // Call Pikago ready-to-dispatch endpoint
+    // --- NEW: derive lightweight customer address context (safe if PG ignores) ---
+    const addressJson = typeof order.delivery_address === 'string' ? null : order.delivery_address;
+    const customer = {
+      name: order.full_name || order.customer_name || null,
+      phone: order.phone || order.customer_phone || null,
+      address_text:
+        (typeof order.delivery_address === 'string' && order.delivery_address) ||
+        addressJson?.address_line_1 ||
+        addressJson?.address ||
+        order.address ||
+        null,
+    };
+
+    // Call Pikago ready-to-dispatch endpoint with extra context (non-breaking)
     const pikagoResponse = await fetch(`${pikagoBaseUrl}/api/ready-to-dispatch`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-shared-secret': sharedSecret,
       },
-      body: JSON.stringify({ orderId }),
+      body: JSON.stringify({ orderId, customer }), // ← extra context
     });
 
     console.log(`[Ready for Delivery] 📡 PG response status: ${pikagoResponse.status}`);
